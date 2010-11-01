@@ -91,7 +91,6 @@ MIDDLEWARE_CLASSES = (
   # required to turn localization on per user
   'django.middleware.gzip.GZipMiddleware',
   #'cloudkick.webapp.account.middleware.PerUserLocaleMiddleware',
-  'django.contrib.csrf.middleware.CsrfMiddleware',
   'django.contrib.sessions.middleware.SessionMiddleware',
   'django.middleware.locale.LocaleMiddleware',
   'django.middleware.common.CommonMiddleware',
