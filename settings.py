@@ -150,6 +150,8 @@ SENTRY_FILTERS = (
     'sentry.filters.LevelFilter',
     'sentry.filters.ServerNameFilter',
     'sentry.filters.SiteFilter',
+    'sentry.filters.PrimaryFilter',
+    'sentry.filters.SecondaryFilter',
     #'example_project.filters.IPFilter',
 )
 SENTRY_SITE = 'ck'
