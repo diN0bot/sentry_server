@@ -56,9 +56,6 @@ class CreateRedmineIssue(GroupActionProvider):
                     req.add_header("Authorization", "Basic %s" % authstring)
 
                 try:
-                    print "REQ", req
-                    print
-                    print "DATA", data
                     response = urllib2.urlopen(req, data).read()
                 except urllib2.HTTPError, e:
                     if e.code == 422:

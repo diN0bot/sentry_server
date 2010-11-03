@@ -2,7 +2,6 @@ import logging
 import sys
 
 class SentryHandler(logging.Handler):
-    print "SENTRY HANDLER"
     def emit(self, record):
         from sentry.client.models import get_client
 
@@ -12,5 +11,4 @@ class SentryHandler(logging.Handler):
             print >> sys.stderr, record.message
             return
 
-        print "BAM"
         get_client().create_from_record(record)
