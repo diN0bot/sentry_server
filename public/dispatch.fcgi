@@ -2,7 +2,7 @@
 
 import sys, os
 
-sys.path.insert(0, os.path.realpath('/var/sites/sentry_server/django/django_src/django'))
+sys.path.insert(0, os.path.realpath('/usr/local/lib/python2.6/dist-packages/Django-1.2.2-py2.6.egg/django'))
 
 PROJECT_PATH=os.environ['PROJECT_PATH']
 

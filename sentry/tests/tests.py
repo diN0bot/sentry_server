@@ -19,7 +19,6 @@ from django.core.management import call_command
 from django.core.urlresolvers import reverse
 from django.core.signals import got_request_exception
 from django.core.servers import basehttp
-from django.test.client import Client
 from django.test import TestCase
 from django.template import TemplateSyntaxError
 from django.utils.encoding import smart_unicode
@@ -29,7 +28,7 @@ from sentry.helpers import transform
 from sentry.models import Message, GroupedMessage
 from sentry.client.base import SentryClient
 from sentry.client.handlers import SentryHandler
-from sentry.client.models import sentry_exception_handler, get_client
+from sentry.client.models import get_client
 
 from models import TestModel, DuplicateKeyModel
 
@@ -208,7 +207,8 @@ class SentryTestCase(TestCase):
         try:
             Message.objects.get(id=999999989)
         except Message.DoesNotExist, exc:
-            error = get_client().create_from_exception()
+            message_id = get_client().create_from_exception()
+            error = Message.objects.get(message_id=message_id)
             self.assertTrue(error.data.get('__sentry__', {}).get('exc'))
         else:
             self.fail('Unable to create `Message` entry.')
@@ -216,7 +216,8 @@ class SentryTestCase(TestCase):
         try:
             Message.objects.get(id=999999989)
         except Message.DoesNotExist, exc:
-            error = get_client().create_from_exception()
+            message_id = get_client().create_from_exception()
+            error = Message.objects.get(message_id=message_id)
             self.assertTrue(error.data.get('__sentry__', {}).get('exc'))
         else:
             self.fail('Unable to create `Message` entry.')
@@ -264,9 +265,11 @@ class SentryTestCase(TestCase):
         cnt = Message.objects.count()
         value = 'רונית מגן'
 
-        error = get_client().create_from_text(value)
+        message_id = get_client().create_from_text(value)
+        error = Message.objects.get(message_id=message_id)
+
         self.assertEquals(Message.objects.count(), cnt+1)
-        self.assertEquals(error.message, value)
+        self.assertEquals(error.message, u'רונית מגן')
 
         logging.info(value)
         self.assertEquals(Message.objects.count(), cnt+2)
@@ -290,7 +293,9 @@ class SentryTestCase(TestCase):
         cnt = Message.objects.count()
         value = 'רונית מגן'.decode('utf-8')
 
-        error = get_client().create_from_text(value)
+        message_id = get_client().create_from_text(value)
+        error = Message.objects.get(message_id=message_id)
+
         self.assertEquals(Message.objects.count(), cnt+1)
         self.assertEquals(error.message, value)
 
@@ -312,7 +317,9 @@ class SentryTestCase(TestCase):
     
     def testLongURLs(self):
         # Fix: #6 solves URLs > 200 characters
-        error = get_client().create_from_text('hello world', url='a'*210)
+        message_id = get_client().create_from_text('hello world', url='a'*210)
+        error = Message.objects.get(message_id=message_id)
+
         self.assertEquals(error.url, 'a'*200)
         self.assertEquals(error.data['url'], 'a'*210)
     
@@ -569,9 +576,98 @@ class SentryTestCase(TestCase):
             args=(),
             exc_info=(None, None, None),
         )
-        message = client.create_from_record(record)
+        message_id = client.create_from_record(record)
+        message = Message.objects.get(message_id=message_id)
+        
         self.assertEquals('test', message.message)
 
+    def testGroupFormatting(self):
+        logger = logging.getLogger()
+        
+        self.setUpHandler()
+
+        logger.error('This is a test %s', 'error')
+        self.assertEquals(Message.objects.count(), 1)
+        self.assertEquals(GroupedMessage.objects.count(), 1)
+        last = Message.objects.get()
+        self.assertEquals(last.logger, 'root')
+        self.assertEquals(last.level, logging.ERROR)
+        self.assertEquals(last.message, 'This is a test error')
+
+        logger.error('This is a test %s', 'message')
+        logger.error('This is a test %s', 'foo')
+        
+        self.assertEquals(Message.objects.count(), 3)
+        self.assertEquals(GroupedMessage.objects.count(), 1)
+    
+    def testUUID(self):
+        import uuid
+        
+        logger = logging.getLogger()
+        
+        self.setUpHandler()
+        
+        uuid = uuid.uuid4()
+
+        logger.error('Test', extra={'data': {'uuid': uuid}})
+        self.assertEquals(Message.objects.count(), 1)
+        self.assertEquals(GroupedMessage.objects.count(), 1)
+        last = Message.objects.get()
+        self.assertEquals(last.logger, 'root')
+        self.assertEquals(last.level, logging.ERROR)
+        self.assertEquals(last.message, 'Test')
+        self.assertEquals(last.data['uuid'], repr(uuid))
+
+    def testVersions(self):
+        import sentry
+        resp = self.client.get(reverse('sentry-log-request-exc'))
+        self.assertEquals(resp.status_code, 200)
+
+        self.assertEquals(Message.objects.count(), 1)
+        self.assertEquals(GroupedMessage.objects.count(), 1)
+        last = Message.objects.get()
+        self.assertEquals(last.data['__sentry__']['versions']['sentry'], sentry.VERSION)
+        self.assertEquals(last.data['__sentry__']['version'], sentry.VERSION)
+        self.assertEquals(last.data['__sentry__']['module'], 'sentry')
+        last = GroupedMessage.objects.get()
+        self.assertEquals(last.data['version'], sentry.VERSION)
+        self.assertEquals(last.data['module'], 'sentry')
+
+    def test404Middleware(self):
+        existing = settings.MIDDLEWARE_CLASSES
+        
+        settings.MIDDLEWARE_CLASSES = (
+            'sentry.client.middleware.Sentry404CatchMiddleware',
+        ) + settings.MIDDLEWARE_CLASSES
+        
+        resp = self.client.get('/non-existant-page')
+        self.assertEquals(resp.status_code, 404)
+
+        self.assertEquals(Message.objects.count(), 1)
+        self.assertEquals(GroupedMessage.objects.count(), 1)
+        last = Message.objects.get()
+        self.assertEquals(last.url, u'http://testserver/non-existant-page')
+        self.assertEquals(last.level, logging.INFO)
+        self.assertEquals(last.logger, 'http404')
+
+        settings.MIDDLEWARE_CLASSES = existing
+
+    def testResponseErrorIdMiddleware(self):
+        # TODO: test with 500s
+        existing = settings.MIDDLEWARE_CLASSES
+        
+        settings.MIDDLEWARE_CLASSES = (
+            'sentry.client.middleware.SentryResponseErrorIdMiddleware',
+            'sentry.client.middleware.Sentry404CatchMiddleware',
+        ) + settings.MIDDLEWARE_CLASSES
+        
+        resp = self.client.get('/non-existant-page')
+        self.assertEquals(resp.status_code, 404)
+        headers = dict(resp.items())
+        self.assertTrue(headers.get('X-Sentry-ID'))
+        self.assertTrue(Message.objects.filter(message_id=headers['X-Sentry-ID']).exists())
+
+        settings.MIDDLEWARE_CLASSES = existing
 
 class SentryViewsTest(TestCase):
     urls = 'sentry.tests.urls'
@@ -640,7 +736,7 @@ class SentryViewsTest(TestCase):
 class RemoteSentryTest(TestCase):
     urls = 'sentry.tests.urls'
     
-    def start_test_server(self, address='localhost', port=8000):
+    def start_test_server(self, address='localhost', port=8001):
         """Creates a live test server object (instance of WSGIServer)."""
         self.server_thread = TestServerThread(address, port)
         self.server_thread.start()
@@ -731,9 +827,17 @@ class RemoteSentryTest(TestCase):
         self.assertEquals(instance.level, 40)
         self.assertTrue(instance.data['__sentry__']['exc'])
 
+    # def testFunctionException(self):
+    #     try: raise Exception(lambda:'foo')
+    #     except: get_client().create_from_exception()
+    #     
+    #     last = Message.objects.get()
+    #     
+    #     self.assertEquals(last.view, 'sentry.tests.tests.testFunctionException')
+
     # def testProcess(self):
     #     self.start_test_server()
-    #     SentryClient.process(message='hello')
+    #     SentryClient().process(message='hello')
     #     instance = Message.objects.all().order_by('-id')[0]
     #     self.assertEquals(instance.message, 'hello')
     #     self.stop_test_server()
@@ -858,6 +962,26 @@ class SentryHelpersTest(TestCase):
         settings.DATABASES = _databases
         settings.DATABASE_ENGINE = _engine
 
+    def test_transform_handles_gettext_lazy(self):
+        from sentry.helpers import transform
+        from django.utils.functional import lazy
+
+        def fake_gettext(to_translate):
+            return u'Igpay Atinlay'
+        fake_gettext_lazy = lazy(fake_gettext, str)
+        self.assertEquals(
+            pickle.loads(pickle.dumps(
+                    transform(fake_gettext_lazy("something")))),
+            u'Igpay Atinlay')
+
+    def test_get_versions(self):
+        import sentry
+        from sentry.helpers import get_versions
+        versions = get_versions(['sentry'])
+        self.assertEquals(versions.get('sentry'), sentry.VERSION)
+        versions = get_versions(['sentry.client'])
+        self.assertEquals(versions.get('sentry'), sentry.VERSION)
+
 class SentryClientTest(TestCase):
     urls = 'sentry.tests.urls'
 
@@ -929,3 +1053,14 @@ class SentryManageTest(TestCase):
         command.handle(days=1)
         
         self.assertEquals(Message.objects.count(), 0)
+
+class SentrySearchTest(TestCase):
+    urls = 'sentry.tests.urls'
+
+    def test_build_index(self):
+        from sentry.views import get_search_query_set
+        logger.error('test search error')
+        
+        qs = get_search_query_set('error')
+        self.assertEquals(qs.count(), 1)
+        self.assertEquals(qs[0:1][0].message, 'test search error')

@@ -44,7 +44,7 @@ class CreateRedmineIssue(GroupActionProvider):
                     }
                 })
                 url = conf.REDMINE_URL + '/projects/' + conf.REDMINE_PROJECT_SLUG + '/issues.json'
-
+                
                 req = urllib2.Request(url, urllib.urlencode({
                     'key': conf.REDMINE_API_KEY,
                 }), headers={
@@ -54,7 +54,7 @@ class CreateRedmineIssue(GroupActionProvider):
                 if conf.REDMINE_USERNAME and conf.REDMINE_PASSWORD:
                     authstring = base64.encodestring('%s:%s' % (conf.REDMINE_USERNAME, conf.REDMINE_PASSWORD))[:-1]
                     req.add_header("Authorization", "Basic %s" % authstring)
-
+                
                 try:
                     response = urllib2.urlopen(req, data).read()
                 except urllib2.HTTPError, e:
@@ -86,7 +86,7 @@ class CreateRedmineIssue(GroupActionProvider):
                 'subject': group.error(),
                 'description': description,
             })
-
+            
         global_errors = form.errors.get('__all__')
 
         BASE_TEMPLATE = "sentry/group/details.html"

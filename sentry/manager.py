@@ -11,7 +11,7 @@ from sentry.helpers import construct_checksum
 
 assert not conf.DATABASE_USING or django.VERSION >= (1, 2), 'The `SENTRY_DATABASE_USING` setting requires Django >= 1.2'
 
-#logger = logging.getLogger('sentry.errors')
+logger = logging.getLogger('sentry.errors')
 
 class SentryManager(models.Manager):
     use_for_related_fields = True
@@ -24,29 +24,37 @@ class SentryManager(models.Manager):
 
     def from_kwargs(self, **kwargs):
         from sentry.models import Message, GroupedMessage, FilterValue
-
+        
         URL_MAX_LENGTH = Message._meta.get_field_by_name('url')[0].max_length
         now = datetime.datetime.now()
 
         view = kwargs.pop('view', None)
-        class_name = kwargs.get('class_name', None)
         logger_name = kwargs.pop('logger', 'root')
         url = kwargs.pop('url', None)
         server_name = kwargs.pop('server_name', conf.CLIENT)
         site = kwargs.pop('site', None)
         data = kwargs.pop('data', {}) or {}
-        tags = kwargs.pop('tags', []) or []
+        message_id = kwargs.pop('message_id', None)
 
         if url:
             data['url'] = url
             url = url[:URL_MAX_LENGTH]
 
-        checksum = construct_checksum(**kwargs)
+        checksum = kwargs.pop('checksum', None)
+        if not checksum:
+            checksum = construct_checksum(**kwargs)
 
         mail = False
         try:
+            kwargs['data'] = {}
+
             if 'url' in data:
-                kwargs['data'] = {'url': data['url']}
+                kwargs['data']['url'] = data['url']
+            if 'version' in data.get('__sentry__', {}):
+                kwargs['data']['version'] = data['__sentry__']['version']
+            if 'module' in data.get('__sentry__', {}):
+                kwargs['data']['module'] = data['__sentry__']['module']
+
             group, created = GroupedMessage.objects.get_or_create(
                 view=view,
                 logger=logger_name,
@@ -68,9 +76,10 @@ class SentryManager(models.Manager):
                 group.last_seen = now
                 group.times_seen += 1
                 signals.post_save.send(sender=GroupedMessage, instance=group, created=False)
-            else:
+            else: 
                 mail = True
             instance = Message.objects.create(
+                message_id=message_id,
                 view=view,
                 logger=logger_name,
                 data=data,
@@ -87,21 +96,12 @@ class SentryManager(models.Manager):
                 FilterValue.objects.get_or_create(key='site', value=site)
             if logger_name:
                 FilterValue.objects.get_or_create(key='logger', value=logger_name)
-            for tag in tags:
-                FilterValue.objects.get_or_create(key='tag', value=tag)
-                #@todo: create tags. or use post_save
-            if class_name:
-                FilterValue.objects.get_or_create(key='class_name', value=class_name)
-            if view:
-                FilterValue.objects.get_or_create(key='view', value=view)
         except Exception, exc:
             # TODO: should we mail admins when there are failures?
             try:
-                #logger.exception(u'Unable to process log entry: %s' % (exc,))
-                print 'Unable to process log entry: %s' % (exc,)
+                logger.exception(u'Unable to process log entry: %s' % (exc,))
             except Exception, exc:
-                #warnings.warn(u'Unable to process log entry: %s' % (exc,))
-                print 'Unable to process log entry: %s' % (exc,)
+                warnings.warn(u'Unable to process log entry: %s' % (exc,))
         else:
             if mail:
                 group.mail_admins()
